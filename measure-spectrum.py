@@ -18,23 +18,33 @@ def set_integration_time(spec, integtime):
         return
     else:
         spec.integration_time_micros(integtime)
-        print("Integration time set")
+        print(f"Integration time set to {integtime} microseconds")
 
     return integtime
+
+def get_supported_corrections(spec_name):
+    if spec_name == "USB4000":
+        return True, False # The API throws an error and says the USB4000 does not support nonlinearlity correction... except it does?
+    if spec_name == "SR6":
+        return False, False
 
 def get_spectrum(spectrometer=None, scans=1):
 
     wavelengths = spectrometer.wavelengths()
     intensities = []
 
+    dark_supported, nonlin_supported = get_supported_corrections(spectrometer.model)
+
     for i in range(0, scans):
-        intensities.append(spectrometer.intensities(correct_dark_counts=True)) # The API throws an error and says the USB4000 does not support nonlinearlity correction... except it does?
+        intensities.append(spectrometer.intensities(correct_dark_counts=dark_supported, correct_nonlinearity=nonlin_supported))
     avg_intensities = np.mean(intensities, axis=0) # Average all collected scans
 
+    """
     fig, ax = plt.subplots()
     ax.plot(wavelengths, avg_intensities, color="blue", linestyle="-", label="Normal")
     plt.show()
     plt.close()
+    """
 
     spectrum = np.array([wavelengths, avg_intensities])
 
@@ -102,12 +112,13 @@ def integrate_spectrum(spectrum):
     return violet_power, blue_power, total_power
 
 def save_results(spectrometer, spectrum, violet_power, blue_power, total_power):
+    spec_name = spectrometer.model
     today = dt.date.today().strftime("%d-%m-%Y")
     foldername = os.path.join(".", "output", today)
     if os.path.exists(foldername) == False: 
         os.mkdir(foldername)
 
-    filename = dt.datetime.now().strftime("%d-%m-%Y--%H-%M-%S.txt")
+    filename = dt.datetime.now().strftime(f"{spec_name}_%d-%m-%Y_%H-%M-%S.txt")
     filepath = os.path.join(foldername, filename)
     with open(filepath, "w") as f:
         f.write(f"{spectrometer}\n----------\n")
@@ -122,18 +133,49 @@ def save_results(spectrometer, spectrum, violet_power, blue_power, total_power):
 
     return
 
-def auto_integration_time(spectrometer):
-    max_intensity = spectrometer.f.spectrometer.get_maximum_intensity()
+def integration_time_tool(spectrometer):
+    # Could run the spectrum plot display on a separate thread for convenience
+    integration_time = 3000000 # Start with a 3s integration time
 
+    input("Turn on the LCU, then press Enter to begin:")
 
-    return spectrometer
+    while True:
+        set_integration_time(spectrometer, integration_time)
+        spectrum = get_spectrum(spectrometer)
+
+        print(max(spectrum[1]))
+
+        fig, ax = plt.subplots()
+        ax.plot(spectrum[0], spectrum[1], color="blue", linestyle="-", label="Normal")
+        ax.set_ylim(ymax=70000)
+        ax.axhline(y=65535, color='k', linestyle='--')
+        plt.show()
+        ax.cla()
+        plt.close()
+
+        while True:
+            selection = input("Please select an option below:\n[1] Integration time too high\n[2] Integration time too low\n[3] Finish with current integration time\n")
+
+            if selection == "1":
+                integration_time = int(integration_time*0.5) # Drop integration time by 50%
+                break
+
+            elif selection == "2":
+                integration_time = int(integration_time*1.25) # Increase integration time by 25%
+                break
+
+            elif selection == "3":
+                return integration_time
+                
+            else:
+                print("Invalid input received, try again")
 
 def calibrate_spectrometer(spectrometer, integtime, scans):
     # Implement procedure to calibrate the spectrometer using a known light source and generate a calibration file
     return
 
 def main():
-    integration_time = 10000
+    integration_time = 100000
     scans_to_avg = 5
 
     print("Connecting to spectrometer...\n")
@@ -141,27 +183,24 @@ def main():
     print(f"Connected to spectrometer {spec}\n")
 
     while True:
-        selection = input("Select an option from the list below, [0] to quit:\n[1] Set Integration Time\n[2] Measure Spectrum\n[3] Calibrate Spectrometer\n")
+        selection = input("---------------------------------\nSelect an option from the list below\n[0] Quit\n[1] Set Integration Time\n[2] Measure Spectrum\n[3] Calibrate Spectrometer\n")
         if selection == "0": # Quit program
             break
 
-        if selection == "1": # Set integration time
+        elif selection == "1": # Set integration time
             while True:
-                selection = input("Integration time settings:\n[1] Automatically set integration time\n[2] Enter integration time manually\n[3] Go back\n")
+                selection = input("---------------------------------\nIntegration time settings:\n[1] Integration time audjustment tool\n[2] Enter integration time manually\n[3] Go back\n")
                 if selection == "1":
-                    auto_integration_time(spec)
-                    continue
-                if selection == "2":
-                    manual_time = input("Enter the desired integration time in microseconds:")
+                    integration_time = integration_time_tool(spec)
+                elif selection == "2":
+                    manual_time = input("Enter the desired integration time in microseconds: ")
                     integration_time = set_integration_time(spec, int(manual_time))
-                    continue
-                if selection == "3":
+                elif selection == "3":
                     break
                 else:
                     print("Invalid input received, try again")
-            continue
 
-        if selection == "2": # Measure spectrum
+        elif selection == "2": # Measure spectrum
             input("Collect a background spectrum with the LCU off. Press Enter to proceed:")
             background = get_spectrum(spectrometer=spec, scans=scans_to_avg)
             input("Press Enter to proceed with LCU measurement:")
@@ -169,11 +208,9 @@ def main():
             cald_spectrum = calibrate_spectrum(spec, integration_time, background, spectrum)
             violet_power, blue_power, total_power = integrate_spectrum(cald_spectrum)
             save_results(spec, cald_spectrum, violet_power, blue_power, total_power)
-            continue
 
-        if selection == "3": # Calibrate spectrometer
+        elif selection == "3": # Calibrate spectrometer
             calibrate_spectrometer()
-            continue
 
         else:
             print("Invalid input received, try again")
