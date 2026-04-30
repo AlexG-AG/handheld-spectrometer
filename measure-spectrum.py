@@ -50,9 +50,24 @@ def get_spectrum(spectrometer=None, scans=1):
 
     return spectrum
 
+def calculate_dl(cal_wavelengths):
+    # Calculate dL, the wavelength spread (how many nanometers a given pixel represents)
+    # First and last points in the spectrum may not be handled 100% correctly, but the difference this makes should be minor.
+
+    dl = []
+
+    for i in range(0, len(cal_wavelengths)): # Need to handle the first and last array elements separately
+        if i == 0:
+            dl.append(float(cal_wavelengths[i+1]) - float(cal_wavelengths[i])) # Handle first pixel
+        elif i == len(cal_wavelengths) - 1:
+            dl.append(float(cal_wavelengths[i]) - float(cal_wavelengths[i - 1])) # Handle last pixel
+        else:
+            dl.append((float(cal_wavelengths[i+1]) - float(cal_wavelengths[i-1]))/2)
+    
+    return dl
+
 def calibrate_spectrum(spectrometer, integtime, background, spectrum):
-    # Need to load a calibration (based on the spectrometer being used?) and scale the spectrum accordingly
-    # Calibration file and spectrum wavelengths mat not necessarily be the same: USB4000 calibration using OceanView only covers up to 906nm, but the script measures up to 940nm. This needs to be handled, hopefully regardless of spectrometer.
+    # Calibration file and spectrum wavelengths may not necessarily be the same: USB4000 calibration using OceanView only covers up to 906nm, but the script measures up to 940nm.
     spectrometer_name = spectrometer.model
 
     # Subtract background spectrum
@@ -71,18 +86,23 @@ def calibrate_spectrum(spectrometer, integtime, background, spectrum):
     with open(filepath, "r") as f:
         #parse calibration file
         cal_data = f.readlines()[9:]
-        num_pixels = len(cal_data)
-        bandpass = spectrum[0][-1] - spectrum[0][0]
-        resolution = bandpass/num_pixels # The pixel dispersion for the spectrometer is not constant along all wavelengths, but I'm approximating it as constant for now.
+        cal_wavelengths = []
+        cal_intensities = []
 
         for i in range(0, len(cal_data)):
             wavelength = cal_data[i].split('\t')[0]
             intensity_scaling = cal_data[i].split('\t')[1]
-            if math.isclose(spectrum[0][i], float(wavelength)):
+
+            cal_wavelengths.append(wavelength)
+            cal_intensities.append(intensity_scaling)
+
+        dl = calculate_dl(cal_wavelengths)
+
+        for i in range(0, len(cal_data)):
+            if math.isclose(spectrum[0][i], float(cal_wavelengths[i])):
                 cald_spectrum[0].append(spectrum[0][i])
-                spec_rad_flux = (spectrum[1][i]*float(intensity_scaling))/(integtime_seconds * resolution * 1000) # Convert to mW/nm
+                spec_rad_flux = (spectrum[1][i]*float(cal_intensities[i]))/(integtime_seconds * dl[i] * 1000) # Convert to mW/nm
                 cald_spectrum[1].append(spec_rad_flux)
-        
     f.close()
 
     return cald_spectrum
