@@ -24,20 +24,41 @@ def set_integration_time(spec, integtime):
 
 def get_supported_corrections(spec_name):
     if spec_name == "USB4000":
-        return True, False # The API throws an error and says the USB4000 does not support nonlinearlity correction... except it does?
+        return True, False # The API throws an error and says the USB4000 does not support nonlinearlity correction... except it does in OceanView?
     if spec_name == "SR6":
         return False, False
+    
+def boxcar_intensities(intensities, boxcar_width):
 
-def get_spectrum(spectrometer=None, scans=1):
+    boxd_intensities = []
 
+    if boxcar_width == 0:
+        return intensities
+
+    # Moving average, needs to be implemented
+    for i in range(0, len(intensities)):
+        if (i - boxcar_width) < 0:
+            boxcar = intensities[0 : i + boxcar_width + 1]
+        elif (i + boxcar_width) > len(intensities):
+            boxcar = intensities[i - boxcar_width : len(intensities)]
+        else:
+            boxcar = intensities[i - boxcar_width : i + boxcar_width + 1]
+
+        boxd_intensities.append(np.mean(boxcar))
+    
+    return boxd_intensities
+
+def get_spectrum(spectrometer=None, scans=1, boxcar_width=0):
+
+    boxd_intensities = []
     wavelengths = spectrometer.wavelengths()
-    intensities = []
 
     dark_supported, nonlin_supported = get_supported_corrections(spectrometer.model)
 
     for i in range(0, scans):
-        intensities.append(spectrometer.intensities(correct_dark_counts=dark_supported, correct_nonlinearity=nonlin_supported))
-    avg_intensities = np.mean(intensities, axis=0) # Average all collected scans
+        intensities = spectrometer.intensities(correct_dark_counts=dark_supported, correct_nonlinearity=nonlin_supported)
+        boxd_intensities.append(boxcar_intensities(intensities, boxcar_width))
+    avg_intensities = np.mean(boxd_intensities, axis=0) # Average all collected scans
 
     """
     fig, ax = plt.subplots()
@@ -45,7 +66,6 @@ def get_spectrum(spectrometer=None, scans=1):
     plt.show()
     plt.close()
     """
-
     spectrum = np.array([wavelengths, avg_intensities])
 
     return spectrum
@@ -131,7 +151,7 @@ def integrate_spectrum(spectrum):
 
     return violet_power, blue_power, total_power
 
-def save_results(spectrometer, spectrum, violet_power, blue_power, total_power):
+def save_results(spectrometer, spectrum, int_time, scans, boxcar_width, violet_power, blue_power, total_power):
     spec_name = spectrometer.model
     today = dt.date.today().strftime("%d-%m-%Y")
     foldername = os.path.join(".", "output", today)
@@ -142,6 +162,9 @@ def save_results(spectrometer, spectrum, violet_power, blue_power, total_power):
     filepath = os.path.join(foldername, filename)
     with open(filepath, "w") as f:
         f.write(f"{spectrometer}\n----------\n")
+        f.write(f"Integration time (microSeconds): {int_time}\n")
+        f.write(f"Scans to Average: {scans}\n")
+        f.write(f"Boxcar width: {boxcar_width}\n")
         f.write(f"350-420nm Power (mW): {violet_power}\n")
         f.write(f"420-550nm Power (mW): {blue_power}\n")
         f.write(f"350-550nm Power (mW): {total_power}\n")
@@ -190,20 +213,22 @@ def integration_time_tool(spectrometer):
             else:
                 print("Invalid input received, try again")
 
-def calibrate_spectrometer(spectrometer, integtime, scans):
+def calibrate_spectrometer(spectrometer, integtime, scans, boxcar_width):
     # Implement procedure to calibrate the spectrometer using a known light source and generate a calibration file
     return
 
 def main():
+    # Default parameters, in case the user does not set them
     integration_time = 100000
     scans_to_avg = 5
+    boxcar_width = 1
 
     print("Connecting to spectrometer...\n")
     spec = connect_spectrometer()
     print(f"Connected to spectrometer {spec}\n")
 
     while True:
-        selection = input("---------------------------------\nSelect an option from the list below\n[0] Quit\n[1] Set Integration Time\n[2] Measure Spectrum\n[3] Calibrate Spectrometer\n")
+        selection = input("---------------------------------\nSelect an option from the list below:\n[0] Quit\n[1] Set Integration Time\n[2] Measure Spectrum\n[3] Calibrate Spectrometer\n")
         if selection == "0": # Quit program
             break
 
@@ -221,20 +246,35 @@ def main():
                     print("Invalid input received, try again")
 
         elif selection == "2": # Measure spectrum
-            input("Collect a background spectrum with the LCU off. Press Enter to proceed:")
-            background = get_spectrum(spectrometer=spec, scans=scans_to_avg)
-            input("Press Enter to proceed with LCU measurement:")
-            spectrum = get_spectrum(spectrometer=spec, scans=scans_to_avg)
-            cald_spectrum = calibrate_spectrum(spec, integration_time, background, spectrum)
-            violet_power, blue_power, total_power = integrate_spectrum(cald_spectrum)
-            save_results(spec, cald_spectrum, violet_power, blue_power, total_power)
+            while True:
+                selection = input("---------------------------------\nSpectrum Measurement Settings:\n[1] Set scans to average\n[2] Set boxcar width\n[3] Perform measurement\n[4] Go back\n")
+                
+                if selection == "1":
+                    manual_scans = input("Enter the number of scans to average: ")
+                    scans_to_avg = int(manual_scans)
+                    print(f"Scans to average set to {scans_to_avg}")
+                elif selection == "2":
+                    manual_box = input("Enter the boxcar width: ")
+                    boxcar_width = int(manual_box)
+                    print(f"Boxcar width set to {boxcar_width}")
+                elif selection == "3":
+                    input("Collect a background spectrum with the LCU off. Press Enter to proceed:")
+                    background = get_spectrum(spectrometer=spec, scans=scans_to_avg, boxcar_width=boxcar_width)
+                    input("Make sure the LCU is on, then, press Enter to proceed with the measurement:")
+                    spectrum = get_spectrum(spectrometer=spec, scans=scans_to_avg, boxcar_width=boxcar_width)
+                    cald_spectrum = calibrate_spectrum(spec, integration_time, background, spectrum)
+                    violet_power, blue_power, total_power = integrate_spectrum(cald_spectrum)
+                    save_results(spec, cald_spectrum, integration_time, scans_to_avg, boxcar_width, violet_power, blue_power, total_power)
+                elif selection == "4":
+                    break
+                else:
+                    print("Invalid input received, try again")
 
         elif selection == "3": # Calibrate spectrometer
             calibrate_spectrometer()
 
         else:
             print("Invalid input received, try again")
-
 
 if __name__ == "__main__":
     main()
